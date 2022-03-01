@@ -1,32 +1,10 @@
-[TOC]
-
-
-
-# 二 集合概述
-
-Java 集合框架如下图所示：
-
-![image-20220203211739965](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220203211739965.png)
-
-<img src="https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220203211813159.png" alt="image-20220203211813159" style="zoom: 50%;" />
-
-注：图中只列举了主要的继承派生关系，并没有列举所有关系。比方省略了`AbstractList`, `NavigableSet`等抽象类以及其他的一些辅助类，如想深入了解，可自行查看源码。
-
-![Java容器](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/Java%E5%AE%B9%E5%99%A8.png)
-
-![Java集合](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/Java%E9%9B%86%E5%90%88.png)
-
-
-
-# 三 HashMap
-
-## 3.1 哈希表
+# 哈希表
 
 - 核心是基于哈希值的桶和链表
 - 0(1)的平均查找、插入、删除时间
 - 致命缺陷是哈希值的碰撞(collision)
 
-## 3.2 Java7 HashMap
+# Java7 HashMap
 
 - 经典的哈希表实现:数组+链表
 - 重要知识点
@@ -37,7 +15,7 @@ Java 集合框架如下图所示：
     - 低效
     - 线程不安全
 
-### 3.2.1 源码解读
+## 源码解读
 
 面，我们来看一下Java的HashMap的源代码。
 
@@ -129,7 +107,7 @@ void transfer(Entry[] newTable)
 
 好了，这个代码算是比较正常的。而且没有什么问题。
 
-### 3.2.2 Java7 HashMap存在的问题
+## Java7 HashMap存在的问题
 
 - [非常容易碰到的死锁](https://coolshell.cn/articles/9606.html)
 
@@ -152,70 +130,57 @@ void transfer(Entry[] newTable)
 
     ![image-20220204234402684](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220204234402684.png)
 
-#### 3.2.2.1 正常的ReHash的过程
+首先需要强调一点，`HashMap`的线程不安全体现在会造成死循环、数据丢失、数据覆盖这些问题。其中死循环和数据丢失是在JDK1.7中出现的问题，在JDK1.8中已经得到解决，然而1.8中仍会有数据覆盖这样的问题。
 
-画了个图做了个演示。
+### 扩容引发的线程不安全
 
-- 我假设了我们的hash算法就是简单的用key mod 一下表的大小（也就是数组的长度）。
+`HashMap`的线程不安全主要是发生在扩容函数中，即根源是在**transfer函数**中，JDK1.7中`HashMap`的`transfer`函数如下：
 
-- 最上面的是old hash 表，其中的Hash表的size=2, 所以key = 3, 7, 5，在mod 2以后都冲突在table[1]这里了。
+![image-20220228120611509](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220228120611509.png)
 
-- 接下来的三个步骤是Hash表 resize成4，然后所有的<key,value> 重新rehash的过程
+这段代码是`HashMap`的扩容操作，重新定位每个桶的下标，并采用头插法将元素迁移到新数组中。头插法会将链表的顺序翻转，这也是形成死循环的关键点。理解了头插法后再继续往下看是如何造成死循环以及数据丢失的。
 
-![img](https://coolshell.cn/wp-content/uploads/2013/05/HashMap01.jpg)
+**扩容造成死循环和数据丢失的分析过程**：
 
-#### 3.2.2.2 并发下的Rehash
+假设现在有两个线程A、B同时对下面这个`HashMap`进行扩容操作：
 
-**1）假设我们有两个线程。**我用红色和浅蓝色标注了一下。
+![1553942282](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/1553942282.jpeg)
 
-我们再回头看一下我们的 transfer代码中的这个细节：
+正常扩容后的结果是下面这样的：
 
-```java
-while(null != e) {
-    Entry<K,V> next = e.next; // !!!!!!
-    if (rehash) {
-        e.hash = null == e.key ? 0 : hash(e.key);
-    }
-    int i = indexFor(e.hash, newCapacity);
-    e.next = newTable[i]; // !!!!!!
-    newTable[i] = e; // !!!!!! // !!!!!!
-    e = next; // !!!!!!
-}
-```
+![1553942426](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/1553942426.jpeg)
 
-而我们的线程二执行完成了。于是我们有下面的这个样子。
+但是当线程A执行到上面`transfer`函数的第11行代码时，CPU时间片耗尽，线程A被挂起。即如下图中位置所示：
 
-![img](https://coolshell.cn/wp-content/uploads/2013/05/HashMap02.jpg)
+![image-20220228121019914](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220228121019914.png)
 
-注意，**因为Thread1的 e 指向了key(3)，而next指向了key(7)，其在线程二rehash后，指向了线程二重组后的链表**。我们可以看到链表的顺序被反转后。
+此时线程A中：e=3、next=7、e.next=null
 
-**2）线程一被调度回来执行。**
+![1553943048](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/1553943048.jpeg)
 
-- **先是执行 newTalbe[i] = e;**
-- **然后是e = next，导致了e指向了key(7)，**
-- **而下一次循环的next = e.next导致了next指向了key(3)**
+当线程A的时间片耗尽后，CPU开始执行线程B，并在线程B中成功的完成了数据迁移
 
-![img](https://coolshell.cn/wp-content/uploads/2013/05/HashMap03.jpg)
+![1553943250](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/1553943250.jpeg)
 
-**3）一切安好。**
+重点来了，根据[Java](https://so.csdn.net/so/search?q=Java&spm=1001.2101.3001.7020)内存模式可知，线程B执行完数据迁移后，此时主内存中`newTable`和`table`都是最新的，也就是说：7.next=3、3.next=null。
 
-线程一接着工作。**把key(7)摘下来，放到newTable[i]的第一个，然后把e和next往下移**。
+随后线程A获得CPU时间片继续执行`newTable[i] = e`，将3放入新数组对应的位置，执行完此轮循环后线程A的情况如下：
 
-![img](https://coolshell.cn/wp-content/uploads/2013/05/HashMap04.jpg)
+![1553943714](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/1553943714.jpeg)
 
-**4）环形链接出现。**
+接着继续执行下一轮循环，此时e=7，从主内存中读取e.next时发现主内存中7.next=3，于是乎next=3，并将7采用头插法的方式放入新数组中，并继续执行完此轮循环，结果如下：
 
-**e.next = newTable[i] 导致 key(3).next 指向了 key(7)**
+![1553944363](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/1553944363.jpeg)
 
-**注意：此时的key(7).next 已经指向了key(3)， 环形链表就这样出现了。**
+执行下一次循环可以发现，next=e.next=null，所以此轮循环将会是最后一轮循环。接下来当执行完e.next=newTable[i]即3.next=7后，3和7之间就相互连接了，当执行完newTable[i]=e后，3被头插法重新插入到链表中，执行结果如下图所示：
 
-![img](https://coolshell.cn/wp-content/uploads/2013/05/HashMap05.jpg)
+![1553944998](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/1553944998.jpeg)
 
-**于是，当我们的线程一调用到，HashTable.get(11)时，悲剧就出现了——Infinite Loop。**
+面说了此时e.next=null即next=null，当执行完e=null后，将不会进行下一轮循环。到此线程A、B的扩容操作完成，很明显当线程A执行完后，HashMap中出现了==环形结构==，当在以后对该HashMap进行操作时会出现死循环。
 
+并且从上图可以发现，元素5在扩容期间被莫名的丢失了，这就发生了==数据丢失==的问题。
 
-
-## 3.3 Java8 HashMap的改进
+# Java8 HashMap的改进
 
 - 数组+链表/红黑树
 
@@ -233,7 +198,7 @@ while(null != e) {
 
   - replace
 
-### 3.3.1 源码解读
+## 源码解读
 
 以`put()`方法为例，讲解HashMap的扩容过程
 
@@ -377,15 +342,26 @@ final Node<K,V>[] resize() {
 }
 ```
 
-### 3.3.2 fail-fast机制
+## JDK1.8中的线程不安全
 
-我们知道 java.util.HashMap 不是线程安全的，因此如果在使用迭代器的过程中有其他线程修改了map，那么将抛出ConcurrentModificationException，这就是所谓fail-fast策略。这一策略在源码中的实现是通过 modCount 域，modCount 顾名思义就是修改次数，对HashMap 内容的修改都将增加这个值，那么在迭代器初始化过程中会将这个值赋给迭代器的 expectedModCount。在迭代过程中，判断 modCount 跟 expectedModCount 是否相等，如果不相等就表示已经有其他线程修改了 Map。
+根据上面JDK1.7出现的问题，在JDK1.8中已经得到了很好的解决，如果你去阅读1.8的源码会发现找不到transfer函数，因为JDK1.8直接在resize函数中完成了数据迁移。另外说一句，JDK1.8在进行元素插入时使用的是尾插法。
 
-### 3.3.3 改进点
+为什么说JDK1.8会出现数据覆盖的情况喃，我们来看一下下面这段JDK1.8中的putVal()中第6行操作代码：
+
+其中第六行代码是判断是否出现hash碰撞，假设两个线程A、B都在进行put操作，并且hash函数计算出的插入下标是相同的，当线程A执行完第六行代码后由于时间片耗尽导致被挂起，而线程B得到时间片后在该下标处插入了元素，完成了正常的插入，然后线程A获得时间片，由于之前已经进行了hash碰撞的判断，所有此时不会再进行判断，而是直接进行插入，这就导致了线程B插入的数据被线程A覆盖了，从而线程不安全。
+
+除此之前，还有就是代码的第38行处有个++size，我们这样想，还是线程A、B，这两个线程同时进行put操作时，假设当前HashMap的zise大小为10，当线程A执行到第38行代码时，从主内存中获得size的值为10后准备进行+1操作，但是由于时间片耗尽只好让出CPU，线程B快乐的拿到CPU还是从主内存中拿到size的值10进行+1操作，完成了put操作并将size=11写回主内存，然后线程A再次拿到CPU并继续执行(此时size的值仍为10)，当执行完put操作后，还是将size=11写回内存，此时，线程A、B都执行了一次put操作，但是size的值只增加了1，所有说还是由于数据覆盖又导致了线程不安全。
+
+
+## fail-fast机制
+
+我们知道 java.util.HashMap 不是线程安全的，因此如果在使用迭代器的过程中有其他线程修改了map，那么将抛出ConcurrentModificationException，这就是所谓fail-fast策略。这一策略在源码中的实现是通过 modCount 域，modCount 顾名思义就是修改次数，对HashMap 内容的修改都将增加这个值，那么==在迭代器初始化过程中会将这个值赋给迭代器的 expectedModCount。在迭代过程中，判断modCount 跟 expectedModCount 是否相等，如果不相等就表示已经有其他线程修改了 Map。==
+
+# 总结（Java7 到 Java8 做了哪些改变，为什么?）
 
 - jdk1.7底层采用entry数组+链表的数据结构，而1.8采用node数组+链表/红黑树的数据结构。
 
-- jdk1.7的HashMap插入新值时使用头插法，1.8使用尾插法。
+- jdk1.7的HashMap插入新值时使用头插法，1.8使用尾插法。（rehash）
 
   使用头插法比较快，但在多线程扩容时会引起倒序和闭环的问题。所以1.8就采用了尾插法。
 
@@ -393,49 +369,88 @@ final Node<K,V>[] resize() {
 
 
 
-## 3.4 Java7 ConcurrentHashMap
+# 经典面试题
 
+## HashMap先不考虑[红黑树](https://www.nowcoder.com/jump/super-jump/word?word=红黑树)，手写一个底层数据结构，存储key value
 
+**数组 + 链表结构：**
 
+```java
+public class HashMap<K,V> extends AbstractMap<K,V> implements Map<K,V>, Cloneable, Serializable {
+    transient Node<K,V>[] table;
+}  
+```
 
+```java
+static class Node<K,V> implements Map.Entry<K,V> {
+        final int hash;
+        final K key;
+        V value;
+        Node<K,V> next;
+        Node(int hash, K key, V value, Node<K,V> next) {
+            this.hash = hash;
+            this.key = key;
+            this.value = value;
+            this.next = next;
+        }
+    }
+```
 
+**数组 + 红黑树结构：**
 
+```java
+public class LinkedHashMap<K,V> extends HashMap<K,V> implements Map<K,V> {
+    static class Entry<K,V> extends HashMap.Node<K,V> {
+        Entry<K,V> before, after;
+        Entry(int hash, K key, V value, Node<K,V> next) {
+            super(hash, key, value, next);
+        }
+	}
+}
+```
 
-## 3.5 Java7 ConcurrentHashMap
+```java
+ static final class TreeNode<K,V> extends LinkedHashMap.Entry<K,V> {
+     TreeNode<K,V> parent;  // red-black tree links
+     TreeNode<K,V> left;
+     TreeNode<K,V> right;
+     TreeNode<K,V> prev;    // needed to unlink next upon deletion
+     boolean red;
+     
+     TreeNode(int hash, K key, V val, Node<K,V> next) {
+         super(hash, key, val, next);
+     }
 
+ }  
+```
 
-
-
-
-
-
-
-
-## 3.6 经典面试题
-
-1. 为什么负载因子是0.75？
+## 为什么负载因子是0.75？
 
 ![image-20220204183529528](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220204183529528.png)
 
-2. 为什么主数组的长度必须为2^n^
+## 为什么主数组的长度必须为2^n^
 
 ![image-20220204184426581](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220204184426581.png)
 
 ![image-20220204225604154](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/image-20220204225604154.png)
 
-3. HashMap为什么是线程不安全的
+## HashMap为什么是线程不安全的
 
-4. hashmap的put的过程
+jdk1.7，在扩容中，数据迁移transfer()，采用头插法，多线程情况下，会产生环形结构和数据丢失；
 
-5. Java7 到 Java8 做了哪些改变，为什么?
+jdk1.8，resize()中，多线程插入情况下，会产生数据覆盖或size++只操作一次的情况；
 
-6. hashmap原理，底层结构，扩容，红黑树退化链表，使用场景
+## HashMap的put()的过程
 
-7. 迁移时，为什么要使用尾插法？
+![621c73330e3e745d894dd88c (1)](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/621c73330e3e745d894dd88c (1).png)
 
-   在jdk1.7 中，扩容采用头插法，但头插法会改变节点的排列，因此，在多线程的场景下，原先按顺序排列的链表，就可能出现首尾相连的问题。在jdk1.8之后，就采用尾插法，因为尾插法不会影响原有的顺序，也就解决了节点相连成环的问题。
+## HashMap的resize()扩容过程
 
-   
+![621c829f1efad40767365be7](https://jsl1997.oss-cn-beijing.aliyuncs.com/note/621c829f1efad40767365be7.png)
+
+## 迁移时，为什么要使用尾插法？
+
+在jdk1.7 中，扩容采用头插法，但头插法会改变节点的排列，因此，在多线程的场景下，原先按顺序排列的链表，就可能出现首尾相连的问题。在jdk1.8之后，就采用尾插法，因为尾插法不会影响原有的顺序，也就解决了节点相连成环的问题。
 
 
 
